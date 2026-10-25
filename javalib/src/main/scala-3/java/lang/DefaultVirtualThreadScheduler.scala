@@ -4,7 +4,6 @@ package java.lang
 
 import java.util.concurrent.*
 import java.util.concurrent.ForkJoinPool.ForkJoinWorkerThreadFactory
-import java.util.concurrent.atomic.AtomicInteger
 
 import scala.scalanative.runtime.VirtualThreadScheduler
 
@@ -35,8 +34,10 @@ private[java] object DefaultVirtualThreadScheduler extends VirtualThreadSchedule
   }
 
   private val delayedSchedulers: Array[ScheduledThreadPoolExecutor] = {
-    val paralellism = Runtime.getRuntime().availableProcessors()
-    val queueCount = Integer.highestOneBit(paralellism * 4).max(1)
+    // Same count as the JDK (VirtualThread.createDelayedTaskSchedulers). Each executor starts its thread lazily on its
+    // first schedule(), which for virtual threads runs on a carrier, so more executors means more carrier time spent
+    // starting threads.
+    val queueCount = timerQueueCount()
     Array.fill(queueCount) {
       val executor: ScheduledThreadPoolExecutor =
         new ScheduledThreadPoolExecutor(
@@ -52,7 +53,20 @@ private[java] object DefaultVirtualThreadScheduler extends VirtualThreadSchedule
       executor
     }
   }
-  private val nextDelayedScheduler = new AtomicInteger()
+
+  private def timerQueueCount(): Int = {
+    val propName = "jdk.virtualThreadScheduler.timerQueues"
+    val propValue = System.getProperty(propName)
+    if (propValue != null) {
+      val queueCount = Integer.parseInt(propValue)
+      if (queueCount != Integer.highestOneBit(queueCount))
+        throw new RuntimeException(s"Value of $propName must be power of 2")
+      queueCount
+    } else {
+      val ncpus = Runtime.getRuntime().availableProcessors()
+      Integer.highestOneBit(ncpus / 4).max(1)
+    }
+  }
 
   override def execute(task: Runnable): Unit = pool.execute(task)
 
@@ -64,7 +78,7 @@ private[java] object DefaultVirtualThreadScheduler extends VirtualThreadSchedule
       delay: scala.Long,
       unit: TimeUnit
   ): VirtualThreadScheduler.Cancellable = {
-    val idx = nextDelayedScheduler.getAndIncrement() & (delayedSchedulers.length - 1)
+    val idx = Thread.currentThread().threadId().toInt & (delayedSchedulers.length - 1)
     val future = delayedSchedulers(idx).schedule(task, delay, unit)
     new VirtualThreadScheduler.Cancellable {
       override def cancel(): scala.Boolean = future.cancel(false)
