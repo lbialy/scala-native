@@ -630,7 +630,17 @@ private[java] final class VirtualThread(
               !needsPin && lazily &&
                 scheduler.isCarrierThread(Thread.currentThread()) &&
                 scheduler.isCarrierIdle(Thread.currentThread())
-            try submitScheduledRun(useLazy)
+            try
+              Thread.currentThread() match {
+                case vt: VirtualThread if !needsPin && (vt.carrierThread ne null) =>
+                  // As in JDK VirtualThread.unpark: submit as the carrier, so the pool pushes onto that carrier's
+                  // local queue (run right after the current task) instead of the shared submission queue,
+                  // behind work that may be waiting on this thread.
+                  NativeThread.setCurrentThread(vt.carrierThread.asInstanceOf[Thread])
+                  try submitScheduledRun(useLazy)
+                  finally NativeThread.setCurrentThread(vt)
+                case _ => submitScheduledRun(useLazy)
+              }
             catch {
               case ex: Throwable =>
                 compareAndSetDispatchState(DispatchState.Queued, DispatchState.Idle)
