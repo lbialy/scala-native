@@ -28,10 +28,15 @@ private[runtime] object Blocker {
     Thread.currentThread() match {
       case vt: VirtualThread =>
         val carrier = vt.carrierThread
-        if (carrier eq null) false
+        if ((carrier eq null) || holdsParkLock()) false
         else vt.scheduler.beginCarrierCompensatedBlock(carrier)
       case _ => false
     }
+
+  @alwaysinline private def holdsParkLock(): scala.Boolean = {
+    val native = NativeThread.currentNativeThread
+    (native ne null) && native.holdsParkLock
+  }
 
   def begin(blocking: scala.Boolean): scala.Boolean =
     if (blocking) begin()

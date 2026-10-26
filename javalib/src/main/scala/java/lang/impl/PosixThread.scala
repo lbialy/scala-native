@@ -163,8 +163,23 @@ private[java] class PosixThread(
     if (time < 0 || (isAbsolute && time == 0)) return
     val absTime = stackalloc[timespec]()
     if (time > 0) toAbsoluteTime(absTime, time, isAbsolute)
+    // Start carrier compensation before taking `lock`. It runs arbitrary code
+    // (it may start a carrier, allocate, trigger a GC and its callbacks) that
+    // can call unpark() on this thread; under `lock` that never returns.
+    val compensating = beginBlockingRegion()
+    try parkLocked(time, isAbsolute, absTime)
+    finally endBlockingRegion(compensating)
+  }
+
+  private def parkLocked(
+      time: Long,
+      isAbsolute: Boolean,
+      absTime: Ptr[timespec]
+  ): Unit = {
     // Interference with ongoing unpark
     if (pthread_mutex_trylock(lock) != 0) return
+    // The blocking calls below would otherwise start compensation under `lock`.
+    holdsParkLock = true
 
     // Preserve WaitingOnMonitorEnter so Thread.getState() reports BLOCKED for
     // threads blocked in monitor enter (ObjectMonitor.enterMonitor).
@@ -207,6 +222,7 @@ private[java] class PosixThread(
       state =
         if (wasWaitingOnMonitorEnter) NativeThread.State.WaitingOnMonitorEnter
         else NativeThread.State.Running
+      holdsParkLock = false
       val status = pthread_mutex_unlock(lock)
       assert(status == 0, "park, unlock")
       atomic_thread_fence(memory_order_seq_cst)

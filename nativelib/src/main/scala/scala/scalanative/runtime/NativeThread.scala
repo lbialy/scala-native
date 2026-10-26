@@ -26,6 +26,23 @@ trait NativeThread {
   protected def isExternalThread: Boolean = false
 
   private[runtime] var isFillingStackTrace: scala.Boolean = false
+
+  /** Set while this thread holds the raw lock of its own park. Blocker.begin
+   *  does nothing then: compensation runs arbitrary code, which must not run
+   *  under that lock.
+   */
+  protected[runtime] var holdsParkLock: scala.Boolean = false
+
+  /** Carrier compensation for a blocking region the caller enters itself, e.g.
+   *  before taking a lock that compensation must not run under.
+   */
+  protected[runtime] final def beginBlockingRegion(): scala.Boolean =
+    Blocker.begin()
+  protected[runtime] final def endBlockingRegion(
+      attempted: scala.Boolean
+  ): Unit =
+    Blocker.end(attempted)
+
   @volatile private var _state: State = State.New
   def state: State = _state
   protected[runtime] def state_=(newState: State): Unit = _state match {
